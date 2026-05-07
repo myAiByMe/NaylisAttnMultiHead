@@ -11,7 +11,7 @@
 #   pip install lm-eval>=0.4.3
 #
 # Usage :
-#   python bench2.py --mode pretrain --model ./Model/naylis_pretrain.pt
+#   python b2.py --mode pretrain --model ./Model/naylis_pretrain.pt
 #   python bench2.py --mode sft      --model ./Model/naylis_sft.pt
 #   python bench2.py --mode pretrain --tasks all --num_fewshot 5
 #   python bench2.py --mode sft      --tasks piqa,mmlu --batch_size 4
@@ -62,6 +62,8 @@ MODEL_CFG = dict(
     max_seq_len    = 512,   # CORRECTION 1 : était 512 → aligne sur le pretrain
     n_kv_heads     = 4,
     rel_rank       = 16,
+    sym_heads      = 0,
+    vanilla_heads  = 4,
     use_rope       = True,
     use_yarn       = False,
     use_swiglu     = True,
@@ -98,6 +100,11 @@ TASK_MAP_SFT = {
     "hellaswag"      : ("hellaswag",        0),
     "winogrande"     : ("winogrande",       0),
     "triviaqa"       : ("triviaqa",         0),
+    "openbookqa"     : ("openbookqa",       0),
+    "sciq"           : ("sciq",             0),
+    "copa"           : ("copa",             0),
+    "race"           : ("race",             0),
+    "commonsense_qa" : ("commonsense_qa",   0),
 }
 
 TASK_MAP_PRETRAIN = {
@@ -111,6 +118,11 @@ TASK_MAP_PRETRAIN = {
     "hellaswag"      : ("hellaswag",       10),
     "winogrande"     : ("winogrande",       5),
     "triviaqa"       : ("triviaqa",         0),
+    "openbookqa"     : ("openbookqa",       0),
+    "sciq"           : ("sciq",             0),
+    "copa"           : ("copa",             0),
+    "race"           : ("race",             0),
+    "commonsense_qa" : ("commonsense_qa",   0),
 }
 
 # CORRECTION 3 : TASKS_ALL séparé par mode
@@ -129,6 +141,11 @@ RANDOM_BASELINES = {
     "nq_open"        : 0.00,
     "boolq"          : 0.50,
     "lambada_openai" : 0.00,
+    "openbookqa"     : 0.25,
+    "sciq"           : 0.25,
+    "copa"           : 0.50,
+    "race"           : 0.25,
+    "commonsense_qa" : 0.20,
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -373,6 +390,21 @@ def load_tokenizer(mode: str) -> AutoTokenizer:
 
 def load_model(model_path: str, device: str) -> NaylisGPT:
     print(f"\n  Chargement modèle : {model_path}")
+
+    # Auto-détection de sym_heads depuis le _info.json si présent
+    import json as _json, os as _os
+    info_path = model_path.replace('.pt', '_info.json')
+    if _os.path.exists(info_path):
+        with open(info_path) as _f:
+            _info = _json.load(_f)
+        _cfg = _info.get('config', {})
+        if 'sym_heads' in _cfg:
+            MODEL_CFG['sym_heads'] = _cfg['sym_heads']
+        if 'vanilla_heads' in _cfg:
+            MODEL_CFG['vanilla_heads'] = _cfg['vanilla_heads']
+        if 'sym_heads' in _cfg or 'vanilla_heads' in _cfg:
+            print(f"  head layout auto-detecte : sym={MODEL_CFG['sym_heads']}  vanilla={MODEL_CFG['vanilla_heads']}")
+
     model = NaylisGPT(**MODEL_CFG)
 
     ckpt  = torch.load(model_path, map_location="cpu", weights_only=True)
