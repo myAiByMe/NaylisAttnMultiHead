@@ -28,8 +28,10 @@ class NaylisBlock(nn.Module):
         n_kv_heads   : Optional[int] = None,
         use_qk_norm  : bool  = True,
         use_flash_attn: bool = True,
-        soft_cap     : Optional[float] = None,
-        rel_rank     : int   = 32,
+        soft_cap      : Optional[float] = None,
+        rel_rank      : int   = 32,
+        sym_heads     : int   = 0,
+        vanilla_heads : int   = 0,
     ):
         super().__init__()
 
@@ -48,6 +50,8 @@ class NaylisBlock(nn.Module):
             use_flash_attn        = use_flash_attn,
             soft_cap              = soft_cap,
             rel_rank              = rel_rank,
+            sym_heads             = sym_heads,
+            vanilla_heads         = vanilla_heads,
         )
         self.ln2 = RMSNorm(embed_dim)
         self.ffn = FeedForward(embed_dim, dropout, use_swiglu=use_swiglu)
