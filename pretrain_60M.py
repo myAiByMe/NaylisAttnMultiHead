@@ -68,6 +68,8 @@ CONFIG = {
     'soft_cap'              : None,
     'use_flash_attn'        : True,
     'rel_rank'              : 16,
+    'sym_heads'             : 0,    # tetes biais SYMETRIQUE  (B+Bt)/2
+    'vanilla_heads'         : 4,    # tetes VANILLA  (attention classique pure)
     # Training
     'batch_size'            : 220,
     'gradient_accumulation' : 1,
@@ -107,8 +109,11 @@ if DEVICE == 'cuda':
     print(f'  VRAM : {torch.cuda.get_device_properties(0).total_memory / 1e9:.0f} GB')
     cap = torch.cuda.get_device_capability()
     print(f'  SM   : {cap[0]}{cap[1]}')
+asym_h = CONFIG['num_heads'] - CONFIG['sym_heads'] - CONFIG['vanilla_heads']
 print(f'  embed={CONFIG["embed_dim"]}  layers={CONFIG["num_layers"]}  '
-      f'heads={CONFIG["num_heads"]}  kv={CONFIG["n_kv_heads"]}  rel_rank={CONFIG["rel_rank"]}')
+      f'heads={CONFIG["num_heads"]}  kv={CONFIG["n_kv_heads"]}  '
+      f'rel_rank={CONFIG["rel_rank"]}  '
+      f'asym={asym_h}  sym={CONFIG["sym_heads"]}  vanilla={CONFIG["vanilla_heads"]}')
 
 
 # -- Tokenizer ------------------------------------------------------------------
@@ -725,6 +730,8 @@ def main():
         soft_cap              = CONFIG['soft_cap'],
         use_flash_attn        = CONFIG['use_flash_attn'],
         rel_rank              = CONFIG['rel_rank'],
+        sym_heads             = CONFIG['sym_heads'],
+        vanilla_heads         = CONFIG['vanilla_heads'],
     ).to(DEVICE)
 
     p = model.count_parameters()
