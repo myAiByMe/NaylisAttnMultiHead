@@ -219,19 +219,33 @@ class NaylisAttention(nn.Module):
         n_kv_heads   : Optional[int] = None,
         use_qk_norm  : bool  = True,
         use_flash_attn: bool = True,
-        soft_cap     : Optional[float] = None,
-        rel_rank     : int   = 32,
+        soft_cap      : Optional[float] = None,
+        rel_rank      : int   = 32,
+        sym_heads     : int   = 0,
+        vanilla_heads : int   = 0,
     ):
         super().__init__()
         assert embed_dim % num_heads == 0
+        graph_heads = num_heads - vanilla_heads
+        assert 0 <= sym_heads <= graph_heads, \
+            f"sym_heads ({sym_heads}) doit etre <= graph_heads ({graph_heads})"
+        assert 0 <= vanilla_heads < num_heads, \
+            f"vanilla_heads ({vanilla_heads}) doit etre < num_heads ({num_heads})"
 
-        self.embed_dim   = embed_dim
-        self.num_heads   = num_heads
-        self.head_dim    = embed_dim // num_heads
-        self.use_rope    = use_rope
-        self.use_qk_norm = use_qk_norm
-        self.soft_cap    = soft_cap
-        self.rel_rank    = rel_rank
+        self.embed_dim    = embed_dim
+        self.num_heads    = num_heads
+        self.head_dim     = embed_dim // num_heads
+        self.use_rope     = use_rope
+        self.use_qk_norm  = use_qk_norm
+        self.soft_cap     = soft_cap
+        self.rel_rank     = rel_rank
+        # Layout des tetes (dans l'ordre) :
+        #   [0 .. sym_heads-1]            -> biais SYMETRIQUE  (B+Bt)/2
+        #   [sym_heads .. graph_heads-1]  -> biais ASYMETRIQUE B[i,j]!=B[j,i]
+        #   [graph_heads .. num_heads-1]  -> VANILLA  (aucun biais graph)
+        self.sym_heads     = sym_heads
+        self.vanilla_heads = vanilla_heads
+        self.graph_heads   = graph_heads
 
         self.n_kv_heads         = n_kv_heads if n_kv_heads is not None else num_heads
         assert num_heads % self.n_kv_heads == 0
@@ -263,21 +277,20 @@ class NaylisAttention(nn.Module):
         else:
             self.rope = None
 
-        # ── Naylis : projecteurs relationnels ASYMÉTRIQUES ───────
-        # rel_q_proj lit depuis x → vecteurs relationnels côté query
-        # rel_k_proj lit depuis x → vecteurs relationnels côté key
-        # Séparés → B[i,j] = <R_q(i), R_k(j)> ≠ B[j,i]
-        # directionnalité Paris→France != France→Paris
-        self.rel_q_proj = nn.Linear(embed_dim, num_heads * rel_rank, bias=False)
-        self.rel_k_proj = nn.Linear(embed_dim, num_heads * rel_rank, bias=False)
-
-        # Init petite std → canaux relationnels silencieux au départ
-        nn.init.normal_(self.rel_q_proj.weight, std=0.01)
-        nn.init.normal_(self.rel_k_proj.weight, std=0.01)
-
-        # graph_scale par head, init=0 → transformer classique au step 0
-        # Le modèle active progressivement les canaux selon le signal
-        self.graph_scale = nn.Parameter(torch.zeros(num_heads))
+        # ── Naylis : projecteurs relationnels (asym + sym seulement) ─
+        # Les vanilla_heads n'ont pas de rel_proj — attention classique pure
+        # rel_q_proj / rel_k_proj couvrent graph_heads tetes uniquement
+        if graph_heads > 0:
+            self.rel_q_proj = nn.Linear(embed_dim, graph_heads * rel_rank, bias=False)
+            self.rel_k_proj = nn.Linear(embed_dim, graph_heads * rel_rank, bias=False)
+            nn.init.normal_(self.rel_q_proj.weight, std=0.01)
+            nn.init.normal_(self.rel_k_proj.weight, std=0.01)
+            # graph_scale par tete graph, init=0 → transformer classique au step 0
+            self.graph_scale = nn.Parameter(torch.zeros(graph_heads))
+        else:
+            self.rel_q_proj  = None
+            self.rel_k_proj  = None
+            self.graph_scale = None
 
         # ── Backend attention ────────────────────────────────────
         self._fa_level  = _FA_LEVEL if use_flash_attn else 0
@@ -297,27 +310,42 @@ class NaylisAttention(nn.Module):
         dtype : torch.dtype,
     ) -> torch.Tensor:
         """
-        Calcule le biais de graphe asymétrique B[i,j] = <R_q(i), R_k(j)>.
+        Calcule le biais de graphe pour les graph_heads tetes.
 
-        Shape : [B, num_heads, S, S]  — même shape que les scores d'attention.
-        Pas de F.normalize → gradient sur magnitude préservé.
-        graph_scale initialisé à 0 → biais nul au step 0.
+        Layout :
+          [0 .. sym_heads-1]           -> SYMETRIQUE  (B+Bt)/2
+          [sym_heads .. graph_heads-1] -> ASYMETRIQUE  B[i,j]!=B[j,i]
+          [graph_heads .. num_heads-1] -> VANILLA : biais = 0 (pas de rel_proj)
+
+        Shape retournee : [B, num_heads, S, S]
+        graph_scale init=0 -> biais nul au step 0.
         """
         B, S, _ = x.shape
-        H, R    = self.num_heads, self.rel_rank
+        H_g, R  = self.graph_heads, self.rel_rank
 
-        # [B, S, H*R] → [B, H, S, R]
-        R_q = self.rel_q_proj(x).view(B, S, H, R).permute(0, 2, 1, 3)
-        R_k = self.rel_k_proj(x).view(B, S, H, R).permute(0, 2, 1, 3)
+        # [B, S, H_g*R] -> [B, H_g, S, R]
+        R_q = self.rel_q_proj(x).view(B, S, H_g, R).permute(0, 2, 1, 3)
+        R_k = self.rel_k_proj(x).view(B, S, H_g, R).permute(0, 2, 1, 3)
 
-        # B[i,j] = R_q[i] · R_k[j]  — asymétrique par construction
-        # [B, H, S, R] @ [B, H, R, S] → [B, H, S, S]
+        # [B, H_g, S, S]
         graph_bias = torch.matmul(R_q, R_k.transpose(-2, -1))
 
-        # Mise à l'échelle par head (init=0 → biais nul au départ)
-        scale      = self.graph_scale.view(1, H, 1, 1)
-        graph_bias = (scale * graph_bias).to(dtype).contiguous()
-        return graph_bias
+        # Symetrisation des sym_heads premieres tetes
+        if self.sym_heads > 0:
+            sym        = graph_bias[:, :self.sym_heads]
+            sym        = (sym + sym.transpose(-2, -1)) * 0.5
+            graph_bias = torch.cat([sym, graph_bias[:, self.sym_heads:]], dim=1)
+
+        # Mise a l'echelle par tete graph
+        scale      = self.graph_scale.view(1, H_g, 1, 1)
+        graph_bias = (scale * graph_bias).to(dtype)
+
+        # Pad avec zeros pour les vanilla_heads
+        if self.vanilla_heads > 0:
+            pad        = torch.zeros(B, self.vanilla_heads, S, S, dtype=dtype, device=x.device)
+            graph_bias = torch.cat([graph_bias, pad], dim=1)
+
+        return graph_bias.contiguous()
 
     def forward(
         self,
