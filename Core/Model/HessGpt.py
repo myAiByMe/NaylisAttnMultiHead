@@ -42,6 +42,8 @@ class NaylisGPT(nn.Module):
         soft_cap              : Optional[float] = None,
         use_flash_attn        : bool  = True,
         rel_rank              : int   = 32,
+        sym_heads             : int   = 0,
+        vanilla_heads         : int   = 0,
     ):
         super().__init__()
 
@@ -61,6 +63,8 @@ class NaylisGPT(nn.Module):
         self.max_seq_len           = max_seq_len
         self.n_kv_heads            = n_kv_heads
         self.rel_rank              = rel_rank
+        self.sym_heads             = sym_heads
+        self.vanilla_heads         = vanilla_heads
 
         # ── Embeddings ───────────────────────────────────────────
         self.token_embeddings = nn.Embedding(vocab_size, embed_dim)
@@ -83,6 +87,8 @@ class NaylisGPT(nn.Module):
                 use_flash_attn        = use_flash_attn,
                 soft_cap              = soft_cap,
                 rel_rank              = rel_rank,
+                sym_heads             = sym_heads,
+                vanilla_heads         = vanilla_heads,
             )
             for _ in range(num_layers)
         ])
