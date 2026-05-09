@@ -69,7 +69,7 @@ CONFIG = {
     'use_flash_attn'        : True,
     'rel_rank'              : 16,
     'sym_heads'             : 0,    # tetes biais SYMETRIQUE  (B+Bt)/2
-    'vanilla_heads'         : 4,    # tetes VANILLA  (attention classique pure)
+    'vanilla_heads'         : 3,    # tetes VANILLA  (attention classique pure)
     # Training
     'batch_size'            : 220,
     'gradient_accumulation' : 1,
